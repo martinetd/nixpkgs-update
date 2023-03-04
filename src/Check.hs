@@ -7,7 +7,8 @@
 module Check
   ( result,
     -- exposed for testing:
-    hasVersion
+    hasVersion,
+    versionWithoutPath
   )
 where
 
@@ -90,13 +91,30 @@ checkTestsBuildReport False =
 checkTestsBuildReport True =
   "- The tests defined in `passthru.tests`, if any, passed"
 
+versionWithoutPath :: String -> Text -> String
+versionWithoutPath resultPath expectedVersion =
+  -- We want to match expectedVersion, except when it is preceeded by
+  -- the new store path (as wrappers contain the full store path which
+  -- often includes the version)
+  -- This can be done with negative lookahead e.g
+  -- /^(?!.*${storePathWithoutVersion}).*${version}/
+  -- Note we also replace '.' with '\\.' for literal match in grep -P,
+  -- there might be a better way of escaping everything...
+  let storePath = fromMaybe (T.pack resultPath) $ T.stripPrefix "/nix/store/" (T.pack resultPath) in
+  let storePathWithoutVersion = fromMaybe storePath $ T.stripSuffix expectedVersion storePath in
+  "^(?!.*"
+    <> T.unpack storePathWithoutVersion
+    <> ").*"
+    <> T.unpack (T.replace "." "\\." expectedVersion)
+
 foundVersionInOutputs :: Text -> String -> IO (Maybe Text)
 foundVersionInOutputs expectedVersion resultPath =
   hush
     <$> runExceptT
       ( do
+          let regex = versionWithoutPath resultPath expectedVersion
           (exitCode, _) <-
-            proc "grep" ["-r", T.unpack expectedVersion, resultPath]
+            proc "grep" ["-rP", regex, resultPath]
               & ourReadProcessInterleaved
           case exitCode of
             ExitSuccess ->

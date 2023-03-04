@@ -18,6 +18,7 @@ import Data.Maybe (fromJust)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Language.Haskell.TH.Env (envQ)
+import Data.List (stripPrefix)
 import OurPrelude
 import System.Exit()
 import Text.Regex.Applicative.Text (RE', (=~))
@@ -91,30 +92,30 @@ checkTestsBuildReport False =
 checkTestsBuildReport True =
   "- The tests defined in `passthru.tests`, if any, passed"
 
+-- | We want to match expectedVersion, except when it is preceeded by
+-- the new store path (as wrappers contain the full store path which
+-- often includes the version).
+--
+-- This can be done with negative lookahead e.g
+-- @/^(?!.*${storePathWithoutVersion}).*${version}/@.
+--
+-- Note we also replace '.' with '\\.' for literal match in @grep -P@,
+-- there might be a better way of escaping everything...
 versionWithoutPath :: String -> Text -> String
 versionWithoutPath resultPath expectedVersion =
-  -- We want to match expectedVersion, except when it is preceeded by
-  -- the new store path (as wrappers contain the full store path which
-  -- often includes the version)
-  -- This can be done with negative lookahead e.g
-  -- /^(?!.*${storePathWithoutVersion}).*${version}/
-  -- Note we also replace '.' with '\\.' for literal match in grep -P,
-  -- there might be a better way of escaping everything...
-  let storePath = fromMaybe (T.pack resultPath) $ T.stripPrefix "/nix/store/" (T.pack resultPath) in
-  let storePathWithoutVersion = fromMaybe storePath $ T.stripSuffix expectedVersion storePath in
-  "^(?!.*"
-    <> T.unpack storePathWithoutVersion
-    <> ").*"
-    <> T.unpack (T.replace "." "\\." expectedVersion)
+  concat [ "^(?!.*", storePathWithoutVersion, ").*", expectedVersionEscaped ]
+  where
+  storePath = T.pack $ fromMaybe resultPath $ stripPrefix "/nix/store/" resultPath
+  storePathWithoutVersion = T.unpack $ fromMaybe storePath $ T.stripSuffix expectedVersion storePath
+  expectedVersionEscaped = T.unpack $ T.replace "." "\\." expectedVersion
 
 foundVersionInOutputs :: Text -> String -> IO (Maybe Text)
 foundVersionInOutputs expectedVersion resultPath =
   hush
     <$> runExceptT
       ( do
-          let regex = versionWithoutPath resultPath expectedVersion
           (exitCode, _) <-
-            proc "grep" ["-rP", regex, resultPath]
+            proc "grep" ["-rP", versionWithoutPath resultPath expectedVersion, resultPath]
               & ourReadProcessInterleaved
           case exitCode of
             ExitSuccess ->
